@@ -1,0 +1,26 @@
+name: Doors
+version: '0.1.0'
+main: fi.alavesa.doors.DoorsPlugin
+api-version: '1.21'
+author: Piia Alavesa
+description: Facility doors - sliding/blast/vertical block doors, keycard readers, lever locks.
+softdepend: [Keycards]
+commands:
+  doors:
+    description: Facility door management
+    usage: |
+      /doors pos1 | pos2            (select the closed door's block region)
+      /doors create <id> <type> <up|down|north|south|east|west>
+      /doors remove <id>
+      /doors open|close|toggle <id>
+      /doors bind <id>              (nearest keycard reader within 5 blocks)
+      /doors unbind <id>
+      /doors bindlock <id> [inverted]   (look at a lever)
+      /doors unbindlock <id>
+      /doors bindredstone <id>          (look at a block to watch for power)
+      /doors list | types | reload
+    aliases: [door]
+permissions:
+  doors.admin:
+    description: Manage facility doors
+    default: op
