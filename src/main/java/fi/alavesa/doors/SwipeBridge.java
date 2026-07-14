@@ -46,7 +46,7 @@ public final class SwipeBridge implements Listener {
         }
         if (any && locked && event.isGranted()) {
             event.setCancelled(true); // we own the answer: no grant feedback
-            event.getPlayer().sendActionBar(Component.text("Door is locked.",
+            Msg.actionbar(event.getPlayer(), Component.text("Door is locked.",
                 NamedTextColor.GRAY, TextDecoration.ITALIC));
             event.getPlayer().playSound(event.getReader().getLocation(),
                 Sound.BLOCK_IRON_DOOR_CLOSE, 0.6f, 0.5f);
