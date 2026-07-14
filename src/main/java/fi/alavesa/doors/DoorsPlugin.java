@@ -2,7 +2,6 @@ package fi.alavesa.doors;
 
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
-import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
@@ -13,28 +12,22 @@ import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.util.BlockVector;
 
-import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
-import java.util.UUID;
 import java.util.stream.Stream;
 
 /**
- * Facility doors: real-block doors (sliding, blast, vertical - families are
- * doors.yml types, guns.yml/cars.yml style) that behave like redstone iron
- * doors: opened by keycard readers, redstone or commands, and refused by a
- * wired lever lock ("Door is locked."). Region is selected with pos1/pos2 on
- * the CLOSED door's blocks; the plugin captures and animates them.
+ * Facility doors: MODELED doors (an ItemDisplay wearing a doors: namespace
+ * model) that slide smoothly over an invisible barrier slab. Families are
+ * doors.yml types, guns.yml/cars.yml style. Iron-door semantics: keycard
+ * readers, redstone or commands move them; a wired lever lock refuses them
+ * ("Door is locked."). Created onto an EMPTY doorway - look at the floor
+ * block under its left edge as you face it.
  */
 public final class DoorsPlugin extends JavaPlugin {
 
-    private static final int MAX_BLOCKS = 256;
-
     private DoorRegistry registry;
     private DoorEngine engine;
-    private final Map<UUID, Location[]> selections = new HashMap<>();
 
     @Override
     public void onEnable() {
@@ -60,18 +53,6 @@ public final class DoorsPlugin extends JavaPlugin {
         if (args.length == 0) return usage(sender);
         Player player = sender instanceof Player p ? p : null;
         switch (args[0].toLowerCase(Locale.ROOT)) {
-            case "pos1", "pos2" -> {
-                if (player == null) return error(sender, "Players only.");
-                Block target = player.getTargetBlockExact(8);
-                if (target == null || target.getType() == Material.AIR) {
-                    return error(sender, "Look at one of the door's blocks (within 8).");
-                }
-                Location[] sel = selections.computeIfAbsent(player.getUniqueId(), k -> new Location[2]);
-                sel[args[0].equalsIgnoreCase("pos1") ? 0 : 1] = target.getLocation();
-                sender.sendMessage(Component.text(args[0].toLowerCase() + " = "
-                    + target.getX() + " " + target.getY() + " " + target.getZ(), NamedTextColor.AQUA));
-                return true;
-            }
             case "create" -> {
                 if (player == null) return error(sender, "Players only.");
                 if (args.length < 4) return usage(sender);
@@ -85,53 +66,58 @@ public final class DoorsPlugin extends JavaPlugin {
                 } catch (IllegalArgumentException e) {
                     return error(sender, "Motion: up, down, north, south, east or west.");
                 }
-                if (motion.getModX() + motion.getModY() + motion.getModZ() == 0
-                    || Math.abs(motion.getModX()) + Math.abs(motion.getModY()) + Math.abs(motion.getModZ()) != 1) {
+                if (Math.abs(motion.getModX()) + Math.abs(motion.getModY()) + Math.abs(motion.getModZ()) != 1) {
                     return error(sender, "Motion: up, down, north, south, east or west.");
                 }
-                Location[] sel = selections.get(player.getUniqueId());
-                if (sel == null || sel[0] == null || sel[1] == null) {
-                    return error(sender, "Select the closed door first: /doors pos1 + /doors pos2.");
+                int width = args.length >= 5 ? Math.max(1, Math.min(6, Integer.parseInt(args[4]))) : 2;
+                int height = args.length >= 6 ? Math.max(1, Math.min(6, Integer.parseInt(args[5]))) : 3;
+                Block floor = player.getTargetBlockExact(8);
+                if (floor == null || floor.getType() == Material.AIR) {
+                    return error(sender, "Look at the FLOOR block under the doorway's left edge (as you face it).");
                 }
-                if (!sel[0].getWorld().equals(sel[1].getWorld())) return error(sender, "Corners in different worlds.");
-                BlockVector min = new BlockVector(Math.min(sel[0].getBlockX(), sel[1].getBlockX()),
-                    Math.min(sel[0].getBlockY(), sel[1].getBlockY()),
-                    Math.min(sel[0].getBlockZ(), sel[1].getBlockZ()));
-                BlockVector max = new BlockVector(Math.max(sel[0].getBlockX(), sel[1].getBlockX()),
-                    Math.max(sel[0].getBlockY(), sel[1].getBlockY()),
-                    Math.max(sel[0].getBlockZ(), sel[1].getBlockZ()));
-                long volume = (long) (max.getBlockX() - min.getBlockX() + 1)
-                    * (max.getBlockY() - min.getBlockY() + 1) * (max.getBlockZ() - min.getBlockZ() + 1);
-                if (volume > MAX_BLOCKS) return error(sender, "Region too big (" + volume + " > " + MAX_BLOCKS + ").");
-
-                Map<BlockVector, String> blocks = new LinkedHashMap<>();
-                for (int x = min.getBlockX(); x <= max.getBlockX(); x++) {
-                    for (int y = min.getBlockY(); y <= max.getBlockY(); y++) {
-                        for (int z = min.getBlockZ(); z <= max.getBlockZ(); z++) {
-                            Block block = sel[0].getWorld().getBlockAt(x, y, z);
-                            if (block.getType() == Material.AIR) continue;
-                            blocks.put(new BlockVector(x - min.getBlockX(), y - min.getBlockY(),
-                                z - min.getBlockZ()), block.getBlockData().getAsString());
+                BlockFace playerFacing = player.getFacing();
+                BlockFace facing = playerFacing.getOppositeFace(); // the door looks back at you
+                BlockFace right = switch (playerFacing) {          // your right as you face it
+                    case NORTH -> BlockFace.EAST;
+                    case EAST -> BlockFace.SOUTH;
+                    case SOUTH -> BlockFace.WEST;
+                    default -> BlockFace.NORTH;
+                };
+                Block base = floor.getRelative(BlockFace.UP);
+                int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE, minZ = Integer.MAX_VALUE;
+                int maxX = Integer.MIN_VALUE, maxY = Integer.MIN_VALUE, maxZ = Integer.MIN_VALUE;
+                for (int i = 0; i < width; i++) {
+                    for (int j = 0; j < height; j++) {
+                        Block cell = base.getRelative(right, i).getRelative(BlockFace.UP, j);
+                        if (cell.getType() != Material.AIR && cell.getType() != Material.BARRIER) {
+                            return error(sender, "The doorway must be EMPTY - " + cell.getType()
+                                + " at " + cell.getX() + " " + cell.getY() + " " + cell.getZ()
+                                + ". The door is a model, not blocks.");
                         }
+                        minX = Math.min(minX, cell.getX()); maxX = Math.max(maxX, cell.getX());
+                        minY = Math.min(minY, cell.getY()); maxY = Math.max(maxY, cell.getY());
+                        minZ = Math.min(minZ, cell.getZ()); maxZ = Math.max(maxZ, cell.getZ());
                     }
                 }
-                if (blocks.isEmpty()) return error(sender, "The selection holds no blocks - select the CLOSED door.");
-                DoorRegistry.Door door = new DoorRegistry.Door(id, sel[0].getWorld().getName(),
-                    min, max, motion, type.name(), blocks);
+                DoorRegistry.Door door = new DoorRegistry.Door(id, player.getWorld().getName(),
+                    new BlockVector(minX, minY, minZ), new BlockVector(maxX, maxY, maxZ),
+                    facing, motion, type.name());
                 registry.doors().put(id, door);
+                engine.applyDoor(door);
                 registry.saveAll();
-                sender.sendMessage(Component.text("Door '" + id + "' created: " + blocks.size()
-                    + " blocks, slides " + motion.name().toLowerCase() + ", type " + type.name()
+                sender.sendMessage(Component.text("Door '" + id + "' created: " + width + "x" + height
+                    + " " + type.name() + ", slides " + motion.name().toLowerCase()
+                    + ", facing " + facing.name().toLowerCase()
                     + ". Bind a reader with /doors bind " + id, NamedTextColor.AQUA));
                 return true;
             }
             case "remove" -> {
                 DoorRegistry.Door door = door(sender, args);
                 if (door == null) return true;
-                engine.close(door);
+                engine.dismantle(door);
                 registry.doors().remove(door.id());
                 registry.saveAll();
-                sender.sendMessage(Component.text("Door '" + door.id() + "' removed (blocks left closed).",
+                sender.sendMessage(Component.text("Door '" + door.id() + "' removed (doorway left open).",
                     NamedTextColor.AQUA));
                 return true;
             }
@@ -222,7 +208,7 @@ public final class DoorsPlugin extends JavaPlugin {
             }
             case "types" -> {
                 registry.types().values().forEach(t -> sender.sendMessage(Component.text(
-                    t.name() + " - " + t.stepTicks() + " ticks/step, auto-close "
+                    t.name() + " - model " + t.model() + ", " + t.openTicks() + " ticks to open, auto-close "
                     + (t.autoCloseSeconds() > 0 ? t.autoCloseSeconds() + "s" : "off"), NamedTextColor.AQUA)));
                 return true;
             }
@@ -246,7 +232,7 @@ public final class DoorsPlugin extends JavaPlugin {
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         return switch (args.length) {
-            case 1 -> Stream.of("pos1", "pos2", "create", "remove", "open", "close", "toggle",
+            case 1 -> Stream.of("create", "remove", "open", "close", "toggle",
                     "bind", "unbind", "bindlock", "unbindlock", "bindredstone", "list", "types", "reload")
                 .filter(o -> o.startsWith(args[0].toLowerCase())).toList();
             case 2 -> args[0].equalsIgnoreCase("create") ? List.of("<id>")
@@ -265,7 +251,7 @@ public final class DoorsPlugin extends JavaPlugin {
 
     private boolean usage(CommandSender sender) {
         sender.sendMessage(Component.text(
-            "/doors pos1|pos2 | create <id> <type> <up|down|north|south|east|west> | open|close|toggle <id> | bind|unbind <id> | bindlock <id> [inverted] | unbindlock <id> | bindredstone <id> | remove <id> | list | types | reload",
+            "/doors create <id> <type> <up|down|north|south|east|west> [width] [height] | open|close|toggle <id> | bind|unbind <id> | bindlock <id> [inverted] | unbindlock <id> | bindredstone <id> | remove <id> | list | types | reload",
             NamedTextColor.AQUA));
         return true;
     }

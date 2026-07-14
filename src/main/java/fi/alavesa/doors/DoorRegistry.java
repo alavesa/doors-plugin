@@ -20,53 +20,67 @@ import java.util.UUID;
 
 /**
  * doors.yml - the same file-driven configuration idea as guns.yml and
- * cars.yml: a "types" section defines how a family of doors behaves (speed,
- * sounds, auto-close), and ops can add their own types with a text editor +
- * /doors reload. The "doors" section is the plugin's own persistence: every
- * created door with its captured blocks, motion, bindings and state.
+ * cars.yml. A "types" section defines door families: which MODEL the door
+ * wears (an item definition in the doors: namespace of the resource pack),
+ * how long the slide takes, whether it auto-closes, what it sounds like.
+ * The "doors" section persists every placed door: doorway region, facing,
+ * motion, bindings, state and its display entity.
  */
 public final class DoorRegistry {
 
-    /** How a door family moves and sounds. */
-    public record DoorType(String name, int stepTicks, int autoCloseSeconds,
-                           String soundStart, String soundStep, String soundEnd) { }
+    /** How a door family looks, moves and sounds. */
+    public record DoorType(String name, String model, int openTicks, int autoCloseSeconds,
+                           String soundStart, String soundEnd) { }
 
-    /** One placed door: a captured block region that slides along `motion`. */
+    /** One placed door: an EMPTY doorway (width x height x 1) filled with
+     *  barriers when shut, fronted by an ItemDisplay wearing the model. */
     public static final class Door {
         final String id;
         final String world;
-        final BlockVector min;
+        final BlockVector min;     // doorway region corners (world coords)
         final BlockVector max;
-        final BlockFace motion;
+        final BlockFace facing;    // which way the door face looks (toward the player who created it)
+        final BlockFace motion;    // which way the slab slides open
         final String type;
-        final Map<BlockVector, String> blocks;   // rel pos (from min) -> blockdata string
         boolean open;
+        UUID display;              // the model entity
         final List<UUID> readers = new ArrayList<>();
-        Location lockLever;        // lever position, null = never locked
-        boolean lockInverted;      // false: lever ON = unlocked
-        Location redstoneAnchor;   // watched block, null = none
+        Location lockLever;
+        boolean lockInverted;
+        Location redstoneAnchor;
 
         Door(String id, String world, BlockVector min, BlockVector max,
-             BlockFace motion, String type, Map<BlockVector, String> blocks) {
+             BlockFace facing, BlockFace motion, String type) {
             this.id = id;
             this.world = world;
             this.min = min;
             this.max = max;
+            this.facing = facing;
             this.motion = motion;
             this.type = type;
-            this.blocks = blocks;
         }
 
         public String id() { return id; }
         public World bukkitWorld() { return Bukkit.getWorld(world); }
 
-        /** Steps to fully open = the door's extent along the motion axis. */
-        public int span() {
-            return switch (motion) {
-                case UP, DOWN -> max.getBlockY() - min.getBlockY() + 1;
-                case EAST, WEST -> max.getBlockX() - min.getBlockX() + 1;
-                default -> max.getBlockZ() - min.getBlockZ() + 1;
-            };
+        public int width() {
+            return facing == BlockFace.NORTH || facing == BlockFace.SOUTH
+                ? max.getBlockX() - min.getBlockX() + 1
+                : max.getBlockZ() - min.getBlockZ() + 1;
+        }
+
+        public int height() { return max.getBlockY() - min.getBlockY() + 1; }
+
+        /** How far (blocks) the slab travels to clear the doorway. */
+        public int travel() {
+            return motion == BlockFace.UP || motion == BlockFace.DOWN ? height() : width();
+        }
+
+        public Location center() {
+            return new Location(bukkitWorld(),
+                (min.getBlockX() + max.getBlockX()) / 2.0 + 0.5,
+                (min.getBlockY() + max.getBlockY()) / 2.0 + 0.5,
+                (min.getBlockZ() + max.getBlockZ()) / 2.0 + 0.5);
         }
     }
 
@@ -87,22 +101,27 @@ public final class DoorRegistry {
         file = new File(plugin.getDataFolder(), "doors.yml");
         YamlConfiguration yaml = YamlConfiguration.loadConfiguration(file);
 
-        if (!yaml.isConfigurationSection("types")) {
-            // the built-in families - a starting point, not a limit
-            yaml.set("types.sliding.step-ticks", 3);
+        // fresh install, or a types section from the 0.1.x block-door era
+        // (recognized by the missing "model" field) - write the current defaults
+        boolean stale = yaml.isConfigurationSection("types")
+            && yaml.getConfigurationSection("types").getKeys(false).stream()
+                .anyMatch(k -> !yaml.isSet("types." + k + ".model"));
+        if (!yaml.isConfigurationSection("types") || stale) {
+            yaml.set("types", null);
+            yaml.set("types.sliding.model", "door_sliding");
+            yaml.set("types.sliding.open-ticks", 12);
             yaml.set("types.sliding.auto-close-seconds", 4);
             yaml.set("types.sliding.sound-start", "block.piston.extend");
-            yaml.set("types.sliding.sound-step", "block.stone.step");
             yaml.set("types.sliding.sound-end", "block.iron_trapdoor.close");
-            yaml.set("types.blast.step-ticks", 10);
+            yaml.set("types.blast.model", "door_blast");
+            yaml.set("types.blast.open-ticks", 40);
             yaml.set("types.blast.auto-close-seconds", 0);
             yaml.set("types.blast.sound-start", "block.piston.contract");
-            yaml.set("types.blast.sound-step", "block.grindstone.use");
             yaml.set("types.blast.sound-end", "block.anvil.place");
-            yaml.set("types.vertical.step-ticks", 4);
+            yaml.set("types.vertical.model", "door_sliding");
+            yaml.set("types.vertical.open-ticks", 16);
             yaml.set("types.vertical.auto-close-seconds", 4);
             yaml.set("types.vertical.sound-start", "block.piston.extend");
-            yaml.set("types.vertical.sound-step", "block.stone.step");
             yaml.set("types.vertical.sound-end", "block.iron_trapdoor.close");
             save(yaml);
         }
@@ -114,10 +133,10 @@ public final class DoorRegistry {
             if (s == null) continue;
             types.put(name.toLowerCase(Locale.ROOT), new DoorType(
                 name.toLowerCase(Locale.ROOT),
-                Math.max(1, s.getInt("step-ticks", 4)),
+                s.getString("model", "door_sliding"),
+                Math.max(2, s.getInt("open-ticks", 12)),
                 Math.max(0, s.getInt("auto-close-seconds", 0)),
-                s.getString("sound-start", ""), s.getString("sound-step", ""),
-                s.getString("sound-end", "")));
+                s.getString("sound-start", ""), s.getString("sound-end", "")));
         }
 
         doors.clear();
@@ -126,18 +145,14 @@ public final class DoorRegistry {
             for (String id : doorRoot.getKeys(false)) {
                 ConfigurationSection s = doorRoot.getConfigurationSection(id);
                 if (s == null) continue;
-                Map<BlockVector, String> blocks = new LinkedHashMap<>();
-                for (String line : s.getStringList("blocks")) {
-                    int bar = line.indexOf('|');
-                    String[] p = line.substring(0, bar).split(",");
-                    blocks.put(new BlockVector(Integer.parseInt(p[0]),
-                        Integer.parseInt(p[1]), Integer.parseInt(p[2])), line.substring(bar + 1));
-                }
                 Door door = new Door(id, s.getString("world"),
                     vector(s.getString("min")), vector(s.getString("max")),
+                    BlockFace.valueOf(s.getString("facing", "NORTH")),
                     BlockFace.valueOf(s.getString("motion", "UP")),
-                    s.getString("type", "sliding"), blocks);
+                    s.getString("type", "sliding"));
                 door.open = s.getBoolean("open", false);
+                String display = s.getString("display", "");
+                if (!display.isEmpty()) door.display = UUID.fromString(display);
                 for (String u : s.getStringList("readers")) door.readers.add(UUID.fromString(u));
                 door.lockLever = location(s.getString("lock-lever"));
                 door.lockInverted = s.getBoolean("lock-inverted", false);
@@ -153,15 +168,13 @@ public final class DoorRegistry {
         for (Door door : doors.values()) {
             String base = "doors." + door.id + ".";
             yaml.set(base + "world", door.world);
-            yaml.set(base + "min", door.min.getBlockX() + "," + door.min.getBlockY() + "," + door.min.getBlockZ());
-            yaml.set(base + "max", door.max.getBlockX() + "," + door.max.getBlockY() + "," + door.max.getBlockZ());
+            yaml.set(base + "min", csv(door.min));
+            yaml.set(base + "max", csv(door.max));
+            yaml.set(base + "facing", door.facing.name());
             yaml.set(base + "motion", door.motion.name());
             yaml.set(base + "type", door.type);
             yaml.set(base + "open", door.open);
-            List<String> lines = new ArrayList<>();
-            door.blocks.forEach((v, data) -> lines.add(
-                v.getBlockX() + "," + v.getBlockY() + "," + v.getBlockZ() + "|" + data));
-            yaml.set(base + "blocks", lines);
+            yaml.set(base + "display", door.display == null ? "" : door.display.toString());
             yaml.set(base + "readers", door.readers.stream().map(UUID::toString).toList());
             yaml.set(base + "lock-lever", string(door.lockLever));
             yaml.set(base + "lock-inverted", door.lockInverted);
@@ -176,6 +189,10 @@ public final class DoorRegistry {
         } catch (IOException e) {
             plugin.getLogger().severe("Could not save doors.yml: " + e.getMessage());
         }
+    }
+
+    private String csv(BlockVector v) {
+        return v.getBlockX() + "," + v.getBlockY() + "," + v.getBlockZ();
     }
 
     private BlockVector vector(String csv) {
