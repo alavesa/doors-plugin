@@ -29,6 +29,17 @@ public final class SwipeBridge implements Listener {
         this.engine = engine;
     }
 
+    /** SCP-005, the Skeleton Key: bypasses the wired lock entirely. */
+    private boolean holdsSkeletonKey(org.bukkit.entity.Player player) {
+        for (var item : player.getInventory().getContents()) {
+            if (item != null && item.hasItemMeta()
+                && item.getItemMeta().getCustomModelDataComponent().getStrings().contains("scp005")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     @EventHandler
     public void onSwipe(KeycardSwipeEvent event) {
         UUID reader = event.getReader().getUniqueId();
@@ -38,11 +49,11 @@ public final class SwipeBridge implements Listener {
             if (!door.readers.contains(reader)) continue;
             any = true;
             if (!event.isGranted()) continue; // normal deny flow handles it
-            if (engine.isLocked(door)) {
+            if (engine.isLocked(door) && !holdsSkeletonKey(event.getPlayer())) {
                 locked = true;
                 continue;
             }
-            engine.keycardActivate(door);
+            engine.keycardActivate(door); // SCP-005 opens even locked doors
         }
         if (any && locked && event.isGranted()) {
             event.setCancelled(true); // we own the answer: no grant feedback
