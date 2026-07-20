@@ -2,7 +2,6 @@ name: Doors
 version: '0.2.2'
 main: fi.alavesa.doors.DoorsPlugin
 api-version: '1.21'
-author: Piia Alavesa
 description: Facility doors - modeled sliding/blast/vertical doors, keycard readers, lever locks.
 softdepend: [Keycards, Labra]
 commands:
