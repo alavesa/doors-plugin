@@ -1,5 +1,5 @@
 name: Doors
-version: '0.2.2'
+version: '0.2.3'
 main: fi.alavesa.doors.DoorsPlugin
 api-version: '1.21'
 description: Facility doors - modeled sliding/blast/vertical doors, keycard readers, lever locks.
